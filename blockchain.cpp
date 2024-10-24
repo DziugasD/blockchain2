@@ -1,3 +1,4 @@
+#pragma GCC optimize("O3,unroll-loops")
 #include <bits/stdc++.h>
 #include "hash.h" 
 
@@ -43,24 +44,6 @@ public:
     std::string getSender() const { return senderKey; }
     std::string getReceiver() const { return receiverKey; }
     double getAmount() const { return amount; }
-};
-
-public:
-    MerkleTree() : root(nullptr) {}
-    ~MerkleTree() { delete root; }
-
-    void buildTree(const std::vector<Transaction>& transactions) {
-        std::vector<std::string> txHashes;
-        for (const auto& tx : transactions) {
-            txHashes.push_back(tx.getId());
-        }
-        delete root;
-        root = buildTree(txHashes);
-    }
-
-    std::string getRootHash() const {
-        return root ? root->hash : "";
-    }
 };
 
 class Block {
@@ -112,20 +95,23 @@ public:
     }
 
     void printBlock() const {
-        std::cout << "\n=== Block #" << blockHeight << " ===\n";
-        std::cout << "Hash: " << blockHash << "\n";
-        std::cout << "Previous Hash: " << previousHash << "\n";
-        std::cout << "Merkle Root: " << merkleRoot << "\n";
-        std::cout << "Nonce: " << nonce << "\n";
-        std::cout << "Timestamp: " << std::chrono::system_clock::to_time_t(timestamp) << "\n";
-        std::cout << "Transaction count: " << transactions.size() << "\n";
+        std::stringstream buffer;
+        buffer << "\n=== Block #" << blockHeight << " ===\n";
+        buffer << "Hash: " << blockHash << "\n";
+        buffer << "Previous Hash: " << previousHash << "\n";
+        buffer << "Merkle Root: " << merkleRoot << "\n";
+        buffer << "Nonce: " << nonce << "\n";
+        buffer << "Timestamp: " << std::chrono::system_clock::to_time_t(timestamp) << "\n";
+        buffer << "Transaction count: " << transactions.size() << "\n";
         
         for (const auto& tx : transactions) {
-            std::cout << "\nTransaction ID: " << tx.getId() << "\n";
-            std::cout << "From: " << tx.getSender() << "\n";
-            std::cout << "To: " << tx.getReceiver() << "\n";
-            std::cout << "Amount: " << tx.getAmount() << "\n";
+            buffer << "\nTransaction ID: " << tx.getId() << "\n";
+            buffer << "From: " << tx.getSender() << "\n";
+            buffer << "To: " << tx.getReceiver() << "\n";
+            buffer << "Amount: " << tx.getAmount() << "\n";
         }
+
+        std::cout << buffer.str();
     }
 
     const std::vector<Transaction>& getTransactions() const { return transactions; }
@@ -257,10 +243,18 @@ public:
                      << std::fixed << std::setprecision(2) << user.getBalance() << "\n";
         }
     }
+
+    const std::vector<Transaction>& getPendingTransactions() const {
+        return pendingTransactions;
+    }
 };
 
 int main() {
-    Blockchain blockchain(4); // Difficulty = 4 leading zeros
+    // Optimize I/O operations
+    std::ios::sync_with_stdio(false);
+    // std::cin.tie(nullptr);
+
+    Blockchain blockchain(4); 
 
     // Generate initial users and transactions
     blockchain.createUsers(1000);
@@ -270,17 +264,32 @@ int main() {
     // Mine blocks until no pending transactions
     while (true) {
         std::string command;
-        std::cout << "\nEnter command (mine/info/balances/exit): ";
+        std::cout << "\nEnter command (mine/mine_all/info/balances/new_user <number>/new_transaction <number>/exit): ";
         std::cin >> command;
 
         if (command == "mine") {
             blockchain.mineNextBlock();
+        }
+        else if (command == "mine_all") {
+            while (!blockchain.getPendingTransactions().empty()) {
+                blockchain.mineNextBlock();
+            }
         }
         else if (command == "info") {
             blockchain.printChainInfo();
         }
         else if (command == "balances") {
             blockchain.printUserBalances();
+        }
+        else if (command == "new_user") {
+            int number;
+            std::cin >> number;
+            blockchain.createUsers(number);
+        }
+        else if (command == "new_transaction") {
+            int number;
+            std::cin >> number;
+            blockchain.generateTransactions(number);
         }
         else if (command == "exit") {
             break;

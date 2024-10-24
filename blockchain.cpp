@@ -6,44 +6,64 @@ class User {
 private:
     std::string name;
     std::string publicKey;
-    double balance;
 
 public:
-    User(const std::string& name, const std::string& publicKey, double balance)
-        : name(name), publicKey(publicKey), balance(balance) {}
+    User(const std::string& name, const std::string& publicKey)
+        : name(name), publicKey(publicKey) {}
 
     std::string getPublicKey() const { return publicKey; }
-    double getBalance() const { return balance; }
-    void setBalance(double newBalance) { balance = newBalance; }
     std::string getName() const { return name; }
+};
+
+class UTXO {
+public:
+    std::string transactionId;
+    int outputIndex;
+    double amount;
+    std::string ownerKey;
+
+    UTXO(const std::string& txId, int index, double amt, const std::string& owner)
+        : transactionId(txId), outputIndex(index), amount(amt), ownerKey(owner) {}
 };
 
 class Transaction {
 private:
     std::string transactionId;
-    std::string senderKey;
-    std::string receiverKey;
-    double amount;
+    std::vector<UTXO> inputs;
+    std::vector<UTXO> outputs;
     std::chrono::system_clock::time_point timestamp;
 
 public:
-    Transaction(const std::string& sender, const std::string& receiver, double amount)
-        : senderKey(sender), receiverKey(receiver), amount(amount) {
+    Transaction(const std::vector<UTXO>& inputs, const std::vector<UTXO>& outputs)
+        : inputs(inputs), outputs(outputs) {
         timestamp = std::chrono::system_clock::now();
         generateTransactionId();
     }
 
     void generateTransactionId() {
         MyHash hasher;
-        std::string data = senderKey + receiverKey + std::to_string(amount) + 
-                          std::to_string(std::chrono::system_clock::to_time_t(timestamp));
+        std::string data;
+        // Combine all inputs
+        for (const auto& input : inputs) {
+            data += input.transactionId + std::to_string(input.outputIndex) + 
+                   std::to_string(input.amount) + input.ownerKey;
+        }
+        // Combine all outputs
+        for (const auto& output : outputs) {
+            data += std::to_string(output.amount) + output.ownerKey;
+        }
+        data += std::to_string(std::chrono::system_clock::to_time_t(timestamp));
         transactionId = hasher.generateHash(data);
+        
+        // Update output transaction IDs
+        for (auto& output : outputs) {
+            output.transactionId = transactionId;
+        }
     }
 
     std::string getId() const { return transactionId; }
-    std::string getSender() const { return senderKey; }
-    std::string getReceiver() const { return receiverKey; }
-    double getAmount() const { return amount; }
+    const std::vector<UTXO>& getInputs() const { return inputs; }
+    const std::vector<UTXO>& getOutputs() const { return outputs; }
 };
 
 class Block {
@@ -106,9 +126,14 @@ public:
         
         for (const auto& tx : transactions) {
             buffer << "\nTransaction ID: " << tx.getId() << "\n";
-            buffer << "From: " << tx.getSender() << "\n";
-            buffer << "To: " << tx.getReceiver() << "\n";
-            buffer << "Amount: " << tx.getAmount() << "\n";
+            buffer << "Inputs:\n";
+            for (const auto& input : tx.getInputs()) {
+                buffer << "  From: " << input.ownerKey << ", Amount: " << input.amount << "\n";
+            }
+            buffer << "Outputs:\n";
+            for (const auto& output : tx.getOutputs()) {
+                buffer << "  To: " << output.ownerKey << ", Amount: " << output.amount << "\n";
+            }
         }
 
         std::cout << buffer.str();
@@ -124,11 +149,22 @@ private:
     std::vector<Transaction> pendingTransactions;
     std::vector<User> users;
     int difficulty;
+    std::vector<UTXO> utxoPool;
     
     std::string generatePublicKey() {
         MyHash hasher;
         static int counter = 0;
         return hasher.generateHash("user" + std::to_string(counter++));
+    }
+
+    double calculateUserBalance(const std::string& publicKey) const {
+        double balance = 0.0;
+        for (const auto& utxo : utxoPool) {
+            if (utxo.ownerKey == publicKey) {
+                balance += utxo.amount;
+            }
+        }
+        return balance;
     }
 
 public:
@@ -138,22 +174,34 @@ public:
         genesisBlock.mineBlock(difficulty);
         chain.push_back(genesisBlock);
     }
+    
+    void createGenesisUTXOs() {
+        for (const auto& user : users) {
+            double initialBalance = calculateUserBalance(user.getPublicKey());
+            UTXO genesisUtxo(chain[0].getHash(), utxoPool.size(), initialBalance, user.getPublicKey());
+            utxoPool.push_back(genesisUtxo);
+        }
+    }
 
     void createUsers(int count) {
         std::random_device rd;
         std::mt19937 gen(rd());
-        std::uniform_real_distribution<> distr(100.0, 1000000.0);
+        std::uniform_real_distribution<> distr(100.0, 100000.0);
 
         for (int i = 0; i < count; i++) {
             std::string name = "User" + std::to_string(i);
             std::string publicKey = generatePublicKey();
-            double balance = distr(gen);
-            users.push_back(User(name, publicKey, balance));
+            users.push_back(User(name, publicKey));
+
+            // Create a genesis UTXO for each user's initial balance
+            double initialBalance = distr(gen);
+            UTXO genesisUtxo(chain[0].getHash(), utxoPool.size(), initialBalance, publicKey);
+            utxoPool.push_back(genesisUtxo);
         }
-        std::cout << count << " users created\n";
+        std::cout << count << " users created with initial UTXOs\n";
     }
 
-    void generateTransactions(int count) {
+        void generateTransactions(int count) {
         if (users.size() < 2) return;
 
         std::random_device rd;
@@ -169,14 +217,97 @@ public:
             } while (receiverIdx == senderIdx);
 
             double amount = amountDistr(gen);
-            if (users[senderIdx].getBalance() >= amount) {
-                Transaction tx(users[senderIdx].getPublicKey(), 
-                             users[receiverIdx].getPublicKey(), 
-                             amount);
+            std::vector<UTXO> availableUtxos;
+            double totalAvailable = 0.0;
+
+            // Collect ALL available UTXOs for the sender first
+            for (const auto& utxo : utxoPool) {
+                if (utxo.ownerKey == users[senderIdx].getPublicKey()) {
+                    availableUtxos.push_back(utxo);
+                    totalAvailable += utxo.amount;
+                }
+            }
+
+            // Sort UTXOs by amount (smallest first) for better UTXO selection
+            std::sort(availableUtxos.begin(), availableUtxos.end(),
+                     [](const UTXO& a, const UTXO& b) { return a.amount < b.amount; });
+
+            // Check if sender has enough funds
+            if (totalAvailable >= amount) {
+                std::vector<UTXO> selectedInputs;
+                double totalInput = 0.0;
+                int outputIndex = 0;
+
+                // Select UTXOs using a more sophisticated selection strategy
+                // Try to find a single UTXO that closely matches the amount first
+                bool foundSingleUtxo = false;
+                for (const auto& utxo : availableUtxos) {
+                    if (utxo.amount >= amount && utxo.amount <= amount * 1.5) {
+                        selectedInputs.push_back(utxo);
+                        totalInput = utxo.amount;
+                        foundSingleUtxo = true;
+                        break;
+                    }
+                }
+
+                // If no suitable single UTXO found, use multiple UTXOs
+                if (!foundSingleUtxo) {
+                    // Start with smallest UTXOs
+                    for (const auto& utxo : availableUtxos) {
+                        if (totalInput < amount) {
+                            selectedInputs.push_back(utxo);
+                            totalInput += utxo.amount;
+                        } else {
+                            break;
+                        }
+                    }
+                }
+
+                // Create outputs
+                std::vector<UTXO> outputs;
+                
+                // Payment to receiver
+                outputs.emplace_back("", outputIndex++, amount, users[receiverIdx].getPublicKey());
+                
+                // Change back to sender if necessary
+                // Only create change UTXO if it's worth it (e.g., more than 1.0)
+                double change = totalInput - amount;
+                if (change >= 1.0) {
+                    outputs.emplace_back("", outputIndex++, change, users[senderIdx].getPublicKey());
+                }
+
+                // Create and add transaction
+                Transaction tx(selectedInputs, outputs);
                 pendingTransactions.push_back(tx);
+
+                // Remove spent UTXOs from pool
+                for (const auto& input : selectedInputs) {
+                    utxoPool.erase(
+                        std::remove_if(utxoPool.begin(), utxoPool.end(),
+                            [&input](const UTXO& utxo) {
+                                return utxo.transactionId == input.transactionId && 
+                                       utxo.outputIndex == input.outputIndex;
+                            }), 
+                        utxoPool.end());
+                }
             }
         }
         std::cout << pendingTransactions.size() << " transactions generated\n";
+    }
+    
+    void updateUTXOPool(const Transaction& tx) {
+        // Remove spent UTXOs
+        for (const auto& input : tx.getInputs()) {
+            utxoPool.erase(
+                std::remove_if(utxoPool.begin(), utxoPool.end(),
+                    [&input](const UTXO& utxo) {
+                        return utxo.transactionId == input.transactionId && 
+                               utxo.outputIndex == input.outputIndex;
+                    }), 
+                utxoPool.end());
+        }
+        // Add new UTXOs
+        utxoPool.insert(utxoPool.end(), tx.getOutputs().begin(), tx.getOutputs().end());
     }
 
     void mineNextBlock() {
@@ -203,15 +334,7 @@ public:
             // Update balances
             const auto& transactions = newBlock.getTransactions();
             for (const auto& tx : transactions) {
-                auto senderIt = std::find_if(users.begin(), users.end(),
-                    [&tx](const User& u) { return u.getPublicKey() == tx.getSender(); });
-                auto receiverIt = std::find_if(users.begin(), users.end(),
-                    [&tx](const User& u) { return u.getPublicKey() == tx.getReceiver(); });
-
-                if (senderIt != users.end() && receiverIt != users.end()) {
-                    senderIt->setBalance(senderIt->getBalance() - tx.getAmount());
-                    receiverIt->setBalance(receiverIt->getBalance() + tx.getAmount());
-                }
+                updateUTXOPool(tx);
             }
 
             // Remove processed transactions
@@ -228,6 +351,24 @@ public:
         }
     }
 
+    void printUTXOPoolInfo() const {
+        std::cout << "\n=== UTXO Pool Info ===\n";
+        std::cout << "Total UTXOs: " << utxoPool.size() << "\n";
+        double totalValue = 0.0;
+        std::map<std::string, double> balances;
+        
+        for (const auto& utxo : utxoPool) {
+            totalValue += utxo.amount;
+            balances[utxo.ownerKey] += utxo.amount;
+        }
+        
+        std::cout << "Total value in UTXO pool: " << totalValue << "\n";
+        std::cout << "\nUser balances from UTXO pool:\n";
+        for (const auto& user : users) {
+            std::cout << user.getName() << ": " << balances[user.getPublicKey()] << "\n";
+        }
+    }
+
     void printChainInfo() const {
         std::cout << "\n=== Blockchain Info ===\n";
         std::cout << "Number of blocks: " << chain.size() << "\n";
@@ -239,8 +380,9 @@ public:
     void printUserBalances() const {
         std::cout << "\n=== User Balances ===\n";
         for (const auto& user : users) {
+            double balance = calculateUserBalance(user.getPublicKey());
             std::cout << user.getName() << " (" << user.getPublicKey().substr(0, 8) << "...): " 
-                     << std::fixed << std::setprecision(2) << user.getBalance() << "\n";
+                      << std::fixed << std::setprecision(2) << balance << "\n";
         }
     }
 
@@ -291,6 +433,9 @@ int main() {
             std::cin >> number;
             blockchain.generateTransactions(number);
         }
+        else if (command == "utxos") {
+            blockchain.printUTXOPoolInfo();
+        }   
         else if (command == "exit") {
             break;
         }

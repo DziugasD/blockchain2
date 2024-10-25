@@ -14,7 +14,7 @@
 
 1. Kompiliuokite projektą naudodami šią komandą:
     ```sh
-    g++ -o Blockchain.exe Blockchain.cpp Blockchain.h -std=c++11
+    g++ -o Blockchain.exe Blockchain.cpp Blockchain.h -std=c++11 -fopenmp
     ```
 
 ## Paleidimas

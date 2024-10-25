@@ -62,7 +62,6 @@ public:
             if (it == utxoPool.end()) return false;
         }
 
-        // Verify total input amount >= total output amount
         double inputSum = 0, outputSum = 0;
         for (const auto& input : inputs) inputSum += input.amount;
         for (const auto& output : outputs) outputSum += output.amount;
@@ -191,7 +190,7 @@ public:
             merkleRoot = "";
         }
     }
-    
+
     bool mineBlock(int difficulty, int timeLimit) {
         MyHash hasher;
         std::string target(difficulty, '0');
@@ -212,7 +211,7 @@ public:
                 nonceCounter += 1000000;  // Increment by a large step to give each thread its own range
             }
             
-            while (!found && !shouldExit) {
+            while (true) {
                 // Check time limit
                 auto currentTime = std::chrono::steady_clock::now();
                 auto elapsedTime = std::chrono::duration_cast<std::chrono::seconds>(
@@ -222,7 +221,12 @@ public:
                     shouldExit = true;
                     break;
                 }
-                
+                if (shouldExit) {
+                    break;
+                }
+                if (found) {
+                    break;
+                }
                 // Create block data with current nonce
                 std::string data = previousHash + merkleRoot +
                                 std::to_string(localNonce) +
@@ -245,7 +249,6 @@ public:
                 
                 localNonce++;
                 
-                // If we've exhausted our range, get a new one
                 if (localNonce % 1000000 == 0) {
                     #pragma omp critical
                     {
@@ -254,8 +257,11 @@ public:
                     }
                 }
             }
+            // auto endTime = std::chrono::steady_clock::now();
+            // auto elapsedTime = std::chrono::duration_cast<std::chrono::seconds>(endTime - startTime).count();
+            // std::cout << elapsedTime ;
         }
-        
+
         return found;
     }
 
@@ -313,7 +319,7 @@ private:
     }
 
 public:
-    Blockchain(int diff = 4) : difficulty(diff) {
+    Blockchain(int diff = 5) : difficulty(diff) {
         // Create genesis block
         Block genesisBlock("0", 0);
         genesisBlock.mineBlock(difficulty, 1);
@@ -476,10 +482,8 @@ public:
         }
         
         std::cout << "Failed to mine any candidate blocks. Increasing mining time...\n";
-        // If no candidate was mined, try again with increased time/attempts
         for (auto& candidate : candidates) {
             if (candidate.mineBlock(difficulty, 10)) {
-                // ... (same update logic as above)
                 chain.push_back(candidate);
                 candidate.printBlock();
                 std::cout << "Block successfully mined with increased time!\n";
@@ -548,7 +552,7 @@ public:
 int main() {
     std::ios::sync_with_stdio(false);
 
-    Blockchain blockchain(4); 
+    Blockchain blockchain(5); 
 
     // Generate initial users and transactions
     blockchain.createUsers(1000);

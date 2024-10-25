@@ -2,6 +2,17 @@
 #include <bits/stdc++.h>
 #include "hash.h" 
 
+struct MerkleNode {
+    std::string hash;
+    MerkleNode *left, *right;
+    
+    MerkleNode(const std::string& hash) : hash(hash), left(nullptr), right(nullptr) {}
+    ~MerkleNode() {
+        delete left;
+        delete right;
+    }
+};
+
 class User {
 private:
     std::string name;
@@ -38,6 +49,36 @@ public:
         : inputs(inputs), outputs(outputs) {
         timestamp = std::chrono::system_clock::now();
         generateTransactionId();
+    }
+    bool verifyTransaction(const std::vector<UTXO>& utxoPool) const {
+        for (const auto& input : inputs) {
+            auto it = std::find_if(utxoPool.begin(), utxoPool.end(),
+                [&input](const UTXO& utxo) {
+                    return utxo.transactionId == input.transactionId &&
+                           utxo.outputIndex == input.outputIndex &&
+                           utxo.amount == input.amount &&
+                           utxo.ownerKey == input.ownerKey;
+                });
+            if (it == utxoPool.end()) return false;
+        }
+
+        // Verify total input amount >= total output amount
+        double inputSum = 0, outputSum = 0;
+        for (const auto& input : inputs) inputSum += input.amount;
+        for (const auto& output : outputs) outputSum += output.amount;
+        if (inputSum < outputSum) return false;
+
+        MyHash hasher;
+        std::string data;
+        for (const auto& input : inputs) {
+            data += input.transactionId + std::to_string(input.outputIndex) + 
+                   std::to_string(input.amount) + input.ownerKey;
+        }
+        for (const auto& output : outputs) {
+            data += std::to_string(output.amount) + output.ownerKey;
+        }
+        data += std::to_string(std::chrono::system_clock::to_time_t(timestamp));
+        return hasher.generateHash(data) == transactionId;
     }
 
     void generateTransactionId() {
@@ -98,6 +139,33 @@ private:
     int blockHeight;
     std::chrono::system_clock::time_point timestamp;
 
+    MerkleNode* buildMerkleTree(const std::vector<std::string>& leaves) {
+        if (leaves.empty()) return nullptr;
+        
+        std::vector<MerkleNode*> nodes;
+        for (const auto& leaf : leaves) {
+            nodes.push_back(new MerkleNode(leaf));
+        }
+        
+        while (nodes.size() > 1) {
+            std::vector<MerkleNode*> newLevel;
+            for (size_t i = 0; i < nodes.size(); i += 2) {
+                MerkleNode* left = nodes[i];
+                MerkleNode* right = (i + 1 < nodes.size()) ? nodes[i + 1] : nodes[i];
+                
+                MyHash hasher;
+                std::string combinedHash = hasher.generateHash(left->hash + right->hash);
+                MerkleNode* parent = new MerkleNode(combinedHash);
+                parent->left = left;
+                parent->right = right;
+                newLevel.push_back(parent);
+            }
+            nodes = newLevel;
+        }
+        
+        return nodes[0];
+    }
+
 public:
     Block(const std::string& prevHash, int height)
         : previousHash(prevHash), nonce(0), blockHeight(height) {
@@ -110,30 +178,85 @@ public:
     }
 
     void calculateMerkleRoot() {
-        MyHash hasher;
-        std::string combinedTxIds;
+        std::vector<std::string> txHashes;
         for (const auto& tx : transactions) {
-            combinedTxIds += tx.getId();
+            txHashes.push_back(tx.getId());
         }
-        merkleRoot = hasher.generateHash(combinedTxIds);
+        
+        MerkleNode* root = buildMerkleTree(txHashes);
+        if (root) {
+            merkleRoot = root->hash;
+            delete root;
+        } else {
+            merkleRoot = "";
+        }
     }
-
-    bool mineBlock(int difficulty) {
+    
+    bool mineBlock(int difficulty, int timeLimit) {
         MyHash hasher;
         std::string target(difficulty, '0');
+        auto startTime = std::chrono::steady_clock::now();
+        bool found = false;
+        int nonceCounter = 0;
+        std::atomic<bool> shouldExit{false};  // Atomic flag for coordinating thread exit
         
-        while (true) {
-            std::string data = previousHash + merkleRoot + 
-                             std::to_string(nonce) + 
-                             std::to_string(std::chrono::system_clock::to_time_t(timestamp));
+        #pragma omp parallel
+        {
+            std::string localBlockHash;
+            int localNonce;
             
-            blockHash = hasher.generateHash(data);
-            
-            if (blockHash.substr(0, difficulty) == target) {
-                return true;
+            // Each thread gets its own nonce range
+            #pragma omp critical
+            {
+                localNonce = nonceCounter;
+                nonceCounter += 1000000;  // Increment by a large step to give each thread its own range
             }
-            nonce++;
+            
+            while (!found && !shouldExit) {
+                // Check time limit
+                auto currentTime = std::chrono::steady_clock::now();
+                auto elapsedTime = std::chrono::duration_cast<std::chrono::seconds>(
+                    currentTime - startTime).count();
+                
+                if (elapsedTime >= timeLimit) {
+                    shouldExit = true;
+                    break;
+                }
+                
+                // Create block data with current nonce
+                std::string data = previousHash + merkleRoot +
+                                std::to_string(localNonce) +
+                                std::to_string(std::chrono::system_clock::to_time_t(timestamp));
+                
+                // Generate and check hash
+                localBlockHash = hasher.generateHash(data);
+                if (localBlockHash.substr(0, difficulty) == target) {
+                    #pragma omp critical
+                    {
+                        if (!found) {
+                            found = true;
+                            nonce = localNonce;
+                            blockHash = localBlockHash;
+                            shouldExit = true;  // Signal other threads to exit
+                        }
+                    }
+                    break;
+                }
+                
+                localNonce++;
+                
+                // If we've exhausted our range, get a new one
+                if (localNonce % 1000000 == 0) {
+                    #pragma omp critical
+                    {
+                        localNonce = nonceCounter;
+                        nonceCounter += 1000000;
+                    }
+                }
+            }
         }
+        
+        return found;
     }
 
     void printBlock() const {
@@ -148,14 +271,14 @@ public:
         
         for (const auto& tx : transactions) {
             buffer << "\nTransaction ID: " << tx.getId() << "\n";
-            // buffer << "Inputs:\n";
-            // for (const auto& input : tx.getInputs()) {
-            //     buffer << "  From: " << input.ownerKey << ", Amount: " << input.amount << "\n";
-            // }
-            // buffer << "Outputs:\n";
-            // for (const auto& output : tx.getOutputs()) {
-            //     buffer << "  To: " << output.ownerKey << ", Amount: " << output.amount << "\n";
-            // }
+            buffer << "Inputs:\n";
+            for (const auto& input : tx.getInputs()) {
+                buffer << "  From: " << input.ownerKey << ", Amount: " << input.amount << "\n";
+            }
+            buffer << "Outputs:\n";
+            for (const auto& output : tx.getOutputs()) {
+                buffer << "  To: " << output.ownerKey << ", Amount: " << output.amount << "\n";
+            }
         }
 
         std::cout << buffer.str();
@@ -193,7 +316,7 @@ public:
     Blockchain(int diff = 4) : difficulty(diff) {
         // Create genesis block
         Block genesisBlock("0", 0);
-        genesisBlock.mineBlock(difficulty);
+        genesisBlock.mineBlock(difficulty, 1);
         chain.push_back(genesisBlock);
     }
 
@@ -303,41 +426,68 @@ public:
     void mineNextBlock() {
         if (pendingTransactions.empty()) return;
 
-        std::vector<Transaction> blockTxs;
-        int txCount = std::min(100, static_cast<int>(pendingTransactions.size()));
-        
+        // Create 5 candidate blocks
+        std::vector<Block> candidates;
         std::random_device rd;
         std::mt19937 gen(rd());
-        std::vector<int> indices(pendingTransactions.size());
-        std::iota(indices.begin(), indices.end(), 0);
-        std::shuffle(indices.begin(), indices.end(), gen);
 
-        Block newBlock(chain.back().getHash(), chain.size());
-        
-        for (int i = 0; i < txCount; i++) {
-            newBlock.addTransaction(pendingTransactions[indices[i]]);
-        }
-
-        std::cout << "Mining block " << chain.size() << "...\n";
-        if (newBlock.mineBlock(difficulty)) {
-            // Update balances
-            const auto& transactions = newBlock.getTransactions();
-            for (const auto& tx : transactions) {
-                updateUTXOPool(tx);
-            }
-
-            // Remove processed transactions
-            std::vector<Transaction> remainingTxs;
-            for (size_t i = 0; i < pendingTransactions.size(); i++) {
-                if (std::find(indices.begin(), indices.begin() + txCount, i) == indices.begin() + txCount) {
-                    remainingTxs.push_back(pendingTransactions[i]);
+        for (int i = 0; i < 5; i++) {
+            Block candidate(chain.back().getHash(), chain.size());
+            
+            // Select ~100 random transactions
+            std::vector<int> indices(pendingTransactions.size());
+            std::iota(indices.begin(), indices.end(), 0);
+            std::shuffle(indices.begin(), indices.end(), gen);
+            
+            int txCount = std::min(100, static_cast<int>(pendingTransactions.size()));
+            for (int j = 0; j < txCount; j++) {
+                // cout << j << " " << indices[j] << endl;
+                const Transaction& tx = pendingTransactions[indices[j]];
+                if (tx.verifyTransaction(utxoPool)) {
+                    candidate.addTransaction(tx);
                 }
             }
-            pendingTransactions = remainingTxs;
-
-            chain.push_back(newBlock);
-            newBlock.printBlock();
+            
+            candidates.push_back(std::move(candidate));
         }
+        // Try mining each candidate
+        for (auto& candidate : candidates) {
+            std::cout << "Attempting to mine candidate block...\n";
+            if (candidate.mineBlock(difficulty, 5)) {
+                // Update UTXO pool with the mined transactions
+                const auto& transactions = candidate.getTransactions();
+                for (const auto& tx : transactions) {
+                    updateUTXOPool(tx);
+                }
+
+                // Remove mined transactions from pending pool
+                for (const auto& tx : transactions) {
+                    pendingTransactions.erase(
+                        std::remove_if(pendingTransactions.begin(), pendingTransactions.end(),
+                            [&tx](const Transaction& t) { return t.getId() == tx.getId(); }),
+                        pendingTransactions.end());
+                }
+
+                chain.push_back(candidate);
+                candidate.printBlock();
+                std::cout << "Block successfully mined!\n";
+                return;
+            }
+        }
+        
+        std::cout << "Failed to mine any candidate blocks. Increasing mining time...\n";
+        // If no candidate was mined, try again with increased time/attempts
+        for (auto& candidate : candidates) {
+            if (candidate.mineBlock(difficulty, 10)) {
+                // ... (same update logic as above)
+                chain.push_back(candidate);
+                candidate.printBlock();
+                std::cout << "Block successfully mined with increased time!\n";
+                return;
+            }
+        }
+        
+        std::cout << "Failed to mine block even with increased time.\n";
     }
 
     void printUTXOPoolInfo() const {

@@ -45,4 +45,6 @@ Paleidus programą, galite naudoti šias komandas:
 - `utxo`: Parodo visus nepanaudotus transakcijų išvestis (UTXO).
 - `new_user <number>`: Sukuria naują vartotoją su nurodytu numeriu.
 - `new_transaction <number>`: Sukuria naują transakciją tarp vartotojų su nurodytu numeriu.
+- `transaction <transactionID>`: Parodo informaciją apie nurodytą transakciją pagal jos ID.
+- `block <blockIdx>`: Parodo informaciją apie nurodytą bloką pagal jo indeksą.
 - `exit`: Išeina iš programos.

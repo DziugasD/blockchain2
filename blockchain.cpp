@@ -61,6 +61,28 @@ public:
         }
     }
 
+    void printInfo() const {
+        std::cout << "Transaction ID: " << transactionId << "\n";
+        std::time_t time = std::chrono::system_clock::to_time_t(timestamp);
+        std::cout << "Timestamp: " << std::put_time(std::localtime(&time), "%Y-%m-%d %H:%M:%S") << "\n";
+        
+        std::cout << "Inputs:\n";
+        for (const auto& input : inputs) {
+            std::cout << "  Transaction ID: " << input.transactionId << "\n";
+            std::cout << "  Output Index: " << input.outputIndex << "\n";
+            std::cout << "  Amount: " << input.amount << "\n";
+            std::cout << "  Owner Key: " << input.ownerKey << "\n";
+        }
+
+        std::cout << "Outputs:\n";
+        for (const auto& output : outputs) {
+            std::cout << "  Transaction ID: " << output.transactionId << "\n";
+            std::cout << "  Output Index: " << output.outputIndex << "\n";
+            std::cout << "  Amount: " << output.amount << "\n";
+            std::cout << "  Owner Key: " << output.ownerKey << "\n";
+        }
+    }
+
     std::string getId() const { return transactionId; }
     const std::vector<UTXO>& getInputs() const { return inputs; }
     const std::vector<UTXO>& getOutputs() const { return outputs; }
@@ -126,14 +148,14 @@ public:
         
         for (const auto& tx : transactions) {
             buffer << "\nTransaction ID: " << tx.getId() << "\n";
-            buffer << "Inputs:\n";
-            for (const auto& input : tx.getInputs()) {
-                buffer << "  From: " << input.ownerKey << ", Amount: " << input.amount << "\n";
-            }
-            buffer << "Outputs:\n";
-            for (const auto& output : tx.getOutputs()) {
-                buffer << "  To: " << output.ownerKey << ", Amount: " << output.amount << "\n";
-            }
+            // buffer << "Inputs:\n";
+            // for (const auto& input : tx.getInputs()) {
+            //     buffer << "  From: " << input.ownerKey << ", Amount: " << input.amount << "\n";
+            // }
+            // buffer << "Outputs:\n";
+            // for (const auto& output : tx.getOutputs()) {
+            //     buffer << "  To: " << output.ownerKey << ", Amount: " << output.amount << "\n";
+            // }
         }
 
         std::cout << buffer.str();
@@ -262,7 +284,6 @@ public:
                 unavailable++;
             }
         }
-        cout << count - unavailable << "\n";
         return count == unavailable ? false : true;
     }
 
@@ -352,6 +373,26 @@ public:
     const std::vector<Transaction>& getPendingTransactions() const {
         return pendingTransactions;
     }
+
+    void printTransactionInfo(const std::string& transactionId) const {
+        for (const auto& block : chain) {
+            for (const auto& transaction : block.getTransactions()) {
+                if (transaction.getId() == transactionId) {
+                    transaction.printInfo();
+                    return;
+                }
+            }
+        }
+        std::cout << "Transaction not found.\n";
+    }
+
+    void printBlockInfo(int blockIndex) const {
+        if (blockIndex < 0 || blockIndex >= chain.size()) {
+            std::cout << "Block index out of range.\n";
+            return;
+        }
+        chain[blockIndex].printBlock();
+    }
 };
 
 int main() {
@@ -366,7 +407,7 @@ int main() {
 
     while (true) {
         std::string command;
-        std::cout << "\nEnter command (mine/mine_all/info/balances/utxo/new_user <number>/new_transaction <number>/exit): ";
+        std::cout << "\nEnter command (mine/mine_all/info/balances/utxo/new_user <number>/new_transaction <number>/transaction <transactionID>/block <blockIdx>/exit): ";
         std::cin >> command;
 
         if (command == "mine") {
@@ -395,7 +436,17 @@ int main() {
         }
         else if (command == "utxo") {
             blockchain.printUTXOPoolInfo();
-        }   
+        }
+        else if (command == "transaction") {
+            std::string transactionId;
+            std::cin >> transactionId;
+            blockchain.printTransactionInfo(transactionId);
+        }
+        else if (command == "block") {
+            int blockIndex;
+            std::cin >> blockIndex;
+            blockchain.printBlockInfo(blockIndex);
+        }
         else if (command == "exit") {
             break;
         }
